@@ -1,0 +1,141 @@
+# Autéllo: публичный Nginx, внутренняя PostgreSQL, pgAdmin, локальный Docker Registry, Watchtower.
+# Перед запуском: cp .env.example .env && отредактируйте; задайте registry-auth/htpasswd (см. .env.example).
+# Поднять: docker compose up -d
+
+name: autello
+
+services:
+  # --- Публичный вход: сайт, фронт, проксирование API к бэку (см. config/nginx) ---
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      # - "443:443"   # раскомментируйте при TLS; смонтируйте сертификаты
+    volumes:
+      - ./config/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - autello
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # --- БД: порт 5432 не публикуем, доступ только из сети compose (бэк, pgadmin) ---
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-autello}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_in_dot_env}
+      POSTGRES_DB: ${POSTGRES_DB:-autello}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    networks:
+      - autello
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # --- Админка БД. Вход: http://127.0.0.1:5050/ или /login (не /pgadmin — без прокси это 404). Порт: VPN/LAN: опубликуйте 5050 в pgadmin-nginx, или SSH -L. ---
+  pgadmin:
+    image: dpage/pgadmin4:8.14
+    restart: unless-stopped
+    environment:
+      # AUTELLO_* — из .env; не используйте PGADMIN_DEFAULT_* в compose: IDE часто экспортирует их в shell и подменяет .env
+      PGADMIN_DEFAULT_EMAIL: ${AUTELLO_PGADMIN_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${AUTELLO_PGADMIN_PASSWORD:-change_me_in_dot_env}
+      PGADMIN_CONFIG_SERVER_MODE: "True"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - autello
+
+  pgadmin-nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - pgadmin
+    volumes:
+      - ./config/pgadmin-nginx/gate.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - autello
+    ports:
+      - "127.0.0.1:5050:80"
+
+  # ---------------------------------------------------------------------------
+  # Реестр образов. Аутентификация: встроенный в registry Basic Auth (htpasswd).
+  # Локально: docker login 127.0.0.1:5000 — логин/пароль из registry-auth/htpasswd.
+  # С другой машины: docker login <IP_ИЛИ_ДНС>:5000; для HTTP без TLS см. .env.example
+  # (insecure-registries). Откройте порт 5000 в firewall при push/pull по сети.
+  # ---------------------------------------------------------------------------
+  registry:
+    image: registry:2.8.3
+    restart: unless-stopped
+    volumes:
+      - registry_data:/var/lib/registry
+      - ./config/registry/config.yml:/etc/docker/registry/config.yml:ro
+      - ./registry-auth/htpasswd:/auth/htpasswd:ro
+    networks:
+      - autello
+    ports:
+      - "5000:5000"
+    # С включённым auth GET /v2/ даёт 401 — проверяем, что порт слушается.
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 5000 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # --- Обновление образов запущенных контейнеров (по расписанию) ---
+  # containrrr/watchtower: в образе client API 1.25 — с Docker 25+ (min API 1.40) контейнер падает. Форк с актуальным client:
+  watchtower:
+    image: nickfedor/watchtower:latest@sha256:62bec6c1a89e9882970130a311f0ac27faf11f26520b8755ca6a78802a1a6d8f
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      WATCHTOWER_CLEANUP: "true"
+      # Раскомментируйте, чтобы обновлялись только сервисы с меткой:
+      # WATCHTOWER_LABEL_ENABLE: "true"
+    networks:
+      - autello
+    # при LABEL_ENABLE: true добавьте к сервису:
+    # labels: [ com.centurylinklabs.watchtower.enable: "true" ]
+
+  # ---------------------------------------------------------------------------
+  # backend:
+  #   # build: ./backend
+  #   # image: <ваш_хост_или_127.0.0.1>:5000/autello-backend:latest
+  #   # restart: unless-stopped
+  #   # environment:
+  #   #   DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  #   #   # + секреты приложения
+  #   # networks: [ autello ]
+  #   # # Не публикуйте ports: — доступ к API только через Nginx
+  #   # depends_on:
+  #   #   postgres: { condition: service_healthy }
+  #   # labels: { "com.centurylinklabs.watchtower.enable": "true" }  # при WATCHTOWER_LABEL_ENABLE
+  # ---------------------------------------------------------------------------
+  # (при необходимости добавьте сюда frontend, если он отдельным контейнером)
+
+volumes:
+  pg_data:
+  registry_data:
+  pgadmin_data:
+
+networks:
+  autello:
+    name: autello
+    driver: bridge
