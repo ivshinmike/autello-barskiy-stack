@@ -1,5 +1,6 @@
 .env
 registry-auth/htpasswd
+.vscode/
 
 # Node / Vite
 frontend/node_modules/
