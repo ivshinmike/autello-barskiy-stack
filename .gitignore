@@ -1,6 +1,9 @@
 .env
 registry-auth/htpasswd
+.admin-bootstrap.local.txt
 .vscode/
+# случайный lock в корне (npm только в frontend/)
+/package-lock.json
 
 # Node / Vite
 frontend/node_modules/

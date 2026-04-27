@@ -129,6 +129,8 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       # Время тестов: Swagger на /docs; в бою — ENABLE_OPENAPI=false
       ENABLE_OPENAPI: ${ENABLE_OPENAPI:-true}
+      # JWT для админ-панели; в бою задайте длинную случайную строку в .env
+      JWT_SECRET: ${JWT_SECRET:-change_me_jwt_dev_only}
     networks: [ autello ]
     # Прямой доступ к Uvicorn только с этой же машины (http://127.0.0.1:8000/docs). С других хостов порт не открыт.
     # Внешний вход по-прежнему через Nginx :80. В production при необходимости закомментируйте ports.

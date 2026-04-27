@@ -7,7 +7,15 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
 from app.core.database import check_db, init_db
-from app.routes import admin_data_router, lead_behavior_router, warm_lead_router
+from app.routes import (
+    admin_auth_router,
+    admin_data_router,
+    admin_users_router,
+    admin_warm_leads_router,
+    lead_behavior_ping_router,
+    lead_behavior_router,
+    warm_lead_router,
+)
 
 
 @asynccontextmanager
@@ -34,7 +42,21 @@ app.include_router(
     lead_behavior_router, prefix="/api/lead-behaviors", tags=["lead_behaviors"]
 )
 app.include_router(
+    lead_behavior_ping_router,
+    prefix="/api/lead-behavior",
+    tags=["lead_behavior_ping"],
+)
+app.include_router(
     admin_data_router, prefix="/api/admin-data", tags=["admin_data"]
+)
+app.include_router(
+    admin_auth_router, prefix="/api/admin-auth", tags=["admin_auth"]
+)
+app.include_router(
+    admin_users_router, prefix="/api/admin-users", tags=["admin_users"]
+)
+app.include_router(
+    admin_warm_leads_router, prefix="/api/admin/warm-leads", tags=["admin_warm_leads"]
 )
 
 

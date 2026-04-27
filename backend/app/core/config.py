@@ -25,6 +25,20 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices("ENABLE_OPENAPI", "ENABLE_DOCS", "enable_openapi"),
     )
+    jwt_secret: str = Field(
+        default="change_me_jwt_dev_only",
+        validation_alias=AliasChoices("JWT_SECRET", "jwt_secret"),
+    )
+    jwt_algorithm: str = Field(
+        default="HS256",
+        validation_alias=AliasChoices("JWT_ALGORITHM", "jwt_algorithm"),
+    )
+    jwt_expire_minutes: int = Field(
+        default=60 * 24,
+        ge=5,
+        le=60 * 24 * 30,
+        validation_alias=AliasChoices("JWT_EXPIRE_MINUTES", "jwt_expire_minutes"),
+    )
 
 
 @lru_cache

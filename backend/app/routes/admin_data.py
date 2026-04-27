@@ -8,7 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.deps import get_current_admin
 from app.models.admin_data import AdminData, AdminDataCRUD
+from app.models.admin_user import AdminUser
 
 router = APIRouter()
 
@@ -33,6 +35,39 @@ def _coerce_extra_ui(v: Any) -> Any:
     return v
 
 
+class ServiceItemIn(BaseModel):
+    """Элемент массива services в admin_data (доп. поля разрешены)."""
+
+    model_config = ConfigDict(extra="allow")
+    id: str | None = None
+    title: str | None = None
+    description: str | None = None
+
+    @field_validator("id", "title", "description", mode="before")
+    @classmethod
+    def _scalar_to_str(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, (dict, list)):
+            raise ValueError("поле должно быть строкой или скаляром")
+        return str(v) if not isinstance(v, str) else v
+
+
+def _services_as_dicts(items: list[ServiceItemIn]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for i, s in enumerate(items):
+        d = s.model_dump(mode="python", exclude_none=False)
+        tid = d.get("id")
+        if tid is None or (isinstance(tid, str) and not tid.strip()):
+            d["id"] = f"svc_{i + 1}"
+        else:
+            d["id"] = str(tid).strip()
+        d["title"] = "" if d.get("title") is None else str(d["title"])
+        d["description"] = "" if d.get("description") is None else str(d["description"])
+        out.append(d)
+    return out
+
+
 class AdminDataIn(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -47,7 +82,7 @@ class AdminDataIn(BaseModel):
             ],
         },
     )
-    services: list[dict[str, Any]] = Field(
+    services: list[ServiceItemIn] = Field(
         default_factory=list,
         description="Список услуг (массив объектов), не один объект { }",
     )
@@ -74,10 +109,22 @@ class AdminDataOut(AdminDataIn):
     created_at: datetime
     updated_at: datetime | None = None
 
+    @field_validator("services", mode="before")
+    @classmethod
+    def _services_out(cls, v: Any) -> Any:
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return [
+                ServiceItemIn.model_validate(x) if not isinstance(x, ServiceItemIn) else x
+                for x in v
+            ]
+        return v
+
 
 class AdminDataPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    services: list[dict[str, Any]] | None = None
+    services: list[ServiceItemIn] | None = None
     budget_range_min: str | None = None
     budget_range_max: str | None = None
     extra_ui: dict[str, Any] | None = None
@@ -110,6 +157,7 @@ class AdminDataPatch(BaseModel):
 async def create_admin_data(
     data: AdminDataIn,
     response: Response,
+    _admin: AdminUser = Depends(get_current_admin),
     session: AsyncSession = Depends(get_db),
     row_id: int | None = Query(
         None,
@@ -117,8 +165,10 @@ async def create_admin_data(
         description="Если указан — обновить строку с этим id (та же таблица). Без параметра — вставка новой строки.",
     ),
 ) -> AdminDataOut:
+    payload = data.model_dump()
+    payload["services"] = _services_as_dicts(data.services)
     if row_id is not None:
-        row = await AdminDataCRUD.update(session, row_id, **data.model_dump())
+        row = await AdminDataCRUD.update(session, row_id, **payload)
         if not row:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -126,7 +176,7 @@ async def create_admin_data(
             )
         response.status_code = status.HTTP_200_OK
     else:
-        row = await AdminDataCRUD.create(session, **data.model_dump())
+        row = await AdminDataCRUD.create(session, **payload)
         response.status_code = status.HTTP_201_CREATED
     # commit до валидации response_model, иначе при ошибке сериализации get_db сделает rollback
     await session.commit()
@@ -164,9 +214,20 @@ async def list_admin_data(
     summary="Частично обновить",
 )
 async def patch_admin_data(
-    row_id: int, data: AdminDataPatch, session: AsyncSession = Depends(get_db)
+    row_id: int,
+    data: AdminDataPatch,
+    _admin: AdminUser = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_db),
 ) -> AdminDataOut:
-    update = {k: v for k, v in data.model_dump(exclude_unset=True).items() if v is not None}
+    dumped = data.model_dump(exclude_unset=True)
+    update: dict[str, Any] = {}
+    for k, v in dumped.items():
+        if v is None:
+            continue
+        if k == "services" and data.services is not None:
+            update[k] = _services_as_dicts(data.services)
+        else:
+            update[k] = v
     row = await AdminDataCRUD.update(session, row_id, **update)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
@@ -179,7 +240,11 @@ async def patch_admin_data(
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Удалить",
 )
-async def delete_admin_data(row_id: int, session: AsyncSession = Depends(get_db)) -> None:
+async def delete_admin_data(
+    row_id: int,
+    _admin: AdminUser = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_db),
+) -> None:
     ok = await AdminDataCRUD.delete(session, row_id)
     if not ok:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")

@@ -102,6 +102,15 @@ class WarmLeadCRUD:
         return list(r.scalars().all())
 
     @staticmethod
+    async def list_all_unbounded(session) -> list[WarmLead]:
+        """Все заявки (для админ-скоринга и агрегированной статистики)."""
+        from sqlalchemy import select
+
+        q = select(WarmLead)
+        r = await session.execute(q)
+        return list(r.scalars().all())
+
+    @staticmethod
     async def update(session, lead_id: int, **fields) -> WarmLead | None:
         row = await WarmLeadCRUD.get_by_id(session, lead_id)
         if not row:

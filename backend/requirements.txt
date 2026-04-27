@@ -5,3 +5,5 @@ asyncpg
 pydantic
 pydantic-settings
 python-dotenv
+PyJWT
+bcrypt
