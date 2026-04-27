@@ -1,5 +1,6 @@
-# Autéllo: публичный Nginx, внутренняя PostgreSQL, pgAdmin, локальный Docker Registry, Watchtower.
-# Перед запуском: cp .env.example .env && отредактируйте; задайте registry-auth/htpasswd (см. .env.example).
+# Autéllo: публичный Nginx, PostgreSQL, бэкенд (только внутри сети — без опубликованных портов), Watchtower.
+# pgAdmin и Docker Registry по умолчанию выключены: docker compose --profile tools up -d
+# Перед запуском: cp .env.example .env && отредактируйте.
 # Поднять: docker compose up -d
 
 name: autello
@@ -48,9 +49,10 @@ services:
       timeout: 3s
       retries: 10
 
-  # --- Админка БД: http://<хост>:5050/ (http, не https). Порт слушает на всех интерфейсах; только localhost: .env → PGADMIN_BIND_ADDRESS=127.0.0.1 ---
+  # --- Админка БД (опционально, профиль tools) ---
   pgadmin:
     image: dpage/pgadmin4:8.14
+    profiles: ["tools"]
     restart: unless-stopped
     environment:
       # AUTELLO_* — из .env; не используйте PGADMIN_DEFAULT_* в compose: IDE часто экспортирует их в shell и подменяет .env
@@ -67,6 +69,7 @@ services:
 
   pgadmin-nginx:
     image: nginx:1.27-alpine
+    profiles: ["tools"]
     restart: unless-stopped
     depends_on:
       - pgadmin
@@ -78,13 +81,11 @@ services:
       - "${PGADMIN_BIND_ADDRESS:-0.0.0.0}:5050:80"
 
   # ---------------------------------------------------------------------------
-  # Реестр образов. Аутентификация: встроенный в registry Basic Auth (htpasswd).
-  # Локально: docker login 127.0.0.1:5000 — логин/пароль из registry-auth/htpasswd.
-  # С другой машины: docker login <IP_ИЛИ_ДНС>:5000; для HTTP без TLS см. .env.example
-  # (insecure-registries). Откройте порт 5000 в firewall при push/pull по сети.
+  # Реестр образов (опционально, профиль tools). См. .env.example (htpasswd, insecure-registries).
   # ---------------------------------------------------------------------------
   registry:
     image: registry:2.8.3
+    profiles: ["tools"]
     restart: unless-stopped
     volumes:
       - registry_data:/var/lib/registry
@@ -119,23 +120,19 @@ services:
     # labels: [ com.centurylinklabs.watchtower.enable: "true" ]
 
   # ---------------------------------------------------------------------------
-  # API: порт 8000 внутри сети compose; снаружи — только через Nginx (location /api/).
-  # Строка БД: async-драйвер asyncpg. Спецсимволы в POSTGRES_PASSWORD — URL-экранируйте.
+  # API: :8000 только в сети autello. Снаружи — Nginx: /api/, /docs — см. default.conf; порты наружу нет.
+  # Строка БД: asyncpg; спецсимволы в POSTGRES_PASSWORD — URL-экранируйте.
   # ---------------------------------------------------------------------------
   backend:
     build: ./backend
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      # Время тестов: Swagger на /docs; в бою — ENABLE_OPENAPI=false
-      ENABLE_OPENAPI: ${ENABLE_OPENAPI:-true}
+      # true — встроенные /docs у бэка; с Nginx пути документации по умолчанию 404
+      ENABLE_OPENAPI: ${ENABLE_OPENAPI:-false}
       # JWT для админ-панели; в бою задайте длинную случайную строку в .env
       JWT_SECRET: ${JWT_SECRET:-change_me_jwt_dev_only}
     networks: [ autello ]
-    # Прямой доступ к Uvicorn только с этой же машины (http://127.0.0.1:8000/docs). С других хостов порт не открыт.
-    # Внешний вход по-прежнему через Nginx :80. В production при необходимости закомментируйте ports.
-    ports:
-      - "127.0.0.1:8000:8000"
     depends_on:
       postgres: { condition: service_healthy }
     # labels: { "com.centurylinklabs.watchtower.enable": "true" }  # при WATCHTOWER_LABEL_ENABLE

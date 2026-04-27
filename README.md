@@ -1,6 +1,6 @@
 # Autello
 
-Docker Compose-стенд: публичный Nginx, PostgreSQL, pgAdmin, приватный Docker Registry v2, Watchtower. Секреты в `.env` (не в репозитории).
+Docker Compose: публичный **Nginx** (:80), **PostgreSQL**, **backend** (порт **не** публикуется — только сеть `autello`), **Watchtower**. Опционально по профилю `tools`: **pgAdmin**, **Docker Registry**. Секреты в `.env` (не в репозитории).
 
 ## Требования
 
@@ -10,52 +10,59 @@ Docker Compose-стенд: публичный Nginx, PostgreSQL, pgAdmin, при
 
 ```bash
 cp .env.example .env
-# Отредактируйте .env; для registry создайте registry-auth/htpasswd (см. .env.example)
+# Отредактируйте .env (пароли, JWT_SECRET).
 
 docker compose up -d
 ```
 
+Сайт и API: **http://адрес-сервера/** (статика из `frontend/dist`) и **/api/** проксируется в бэкенд. Прямого доступа к Uvicorn на :8000 с хоста **нет**.
+
+### Опционально: pgAdmin и Registry
+
+```bash
+docker compose --profile tools up -d
+```
+
 ## Сервисы
 
-| Сервис        | Назначение |
-|---------------|------------|
-| **nginx**     | Публичный HTTP (:80), заготовка для фронта и API — см. `config/nginx/default.conf` |
-| **postgres**  | БД, порт 5432 **не** проброшен наружу, доступ из сети `autello` |
-| **pgadmin** + **pgadmin-nginx** | Веб-интерфейс pgAdmin на **127.0.0.1:5050** (не на :80) |
-| **registry**  | Официальный `registry:2.8.3`, Basic Auth (htpasswd), порт **5000** |
-| **watchtower**| Обновление образов по расписанию, с опциональной меткой (см. `docker-compose.yml`) |
+| Сервис | Назначение |
+|--------|------------|
+| **nginx** | Публичный HTTP (:80), фронт и API — см. `config/nginx/default.conf` |
+| **backend** | FastAPI, **:8000 только внутри** сети; снаружи — через Nginx `/api/`, `GET /health` |
+| **postgres** | БД, порт 5432 **не** пробрасывается наружу |
+| **pgadmin** + **pgadmin-nginx** | Профиль **`tools`**, :5050 |
+| **registry** | Профиль **`tools`**, :5000 |
+| **watchtower** | Обновление образов по расписанию (см. `docker-compose.yml`) |
 
-## Доступ
+## API и OpenAPI
 
-### pgAdmin
+- С браузера к хосту **:80** пути **/docs**, **/redoc**, **/openapi.json** зарезервированы под **404** (чтобы не отдавался SPA). Рабочий вход в приложение: **/api/…**.
+- Проверка бэка: `GET /health` на том же хосте (Nginx) или `GET /api/health`.
+- Включение Swagger **на Uvicorn внутри контейнера**: `ENABLE_OPENAPI=true` в `.env` и, например,  
+  `docker compose exec backend curl -sS http://127.0.0.1:8000/docs` (порт 8000 доступен **только внутри** контейнера backend).
 
-- URL на машине с Docker: **http://127.0.0.1:5050/** (или **/login**; путь `/pgadmin` редиректится на `/`).
-- С другой машины: SSH-туннель `ssh -L 5050:127.0.0.1:5050 user@сервер`, затем **http://127.0.0.1:5050** в браузере.
-- Учётка: переменные **`AUTELLO_PGADMIN_EMAIL`** и **`AUTELLO_PGADMIN_PASSWORD`** в `.env` (именно префикс `AUTELLO_`, а не `PGADMIN_DEFAULT_` — иначе IDE может подставить свои env и «сломать» логин). Учётка создаётся **при первом создании** тома `pgadmin_data`.
+## Доступ: pgAdmin (при `--profile tools`)
 
-### Подключение к PostgreSQL из pgAdmin
+- URL: **http://&lt;хост&gt;:5050/**
+- Учётка: **`AUTELLO_PGADMIN_EMAIL`**, **`AUTELLO_PGADMIN_PASSWORD`** в `.env` (префикс `AUTELLO_` — не `PGADMIN_DEFAULT_`, см. комментарии в `.env.example`).
 
-- **Host:** `postgres` (имя сервиса в compose)  
+### Подключение к PostgreSQL
+
+- **Host (из pgAdmin-контейнера):** `postgres`  
 - **Port:** `5432`  
-- **User / Password / Database:** из `.env` — `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`.  
-- Пароль в самой БД **не** обновляется при правке `POSTGRES_PASSWORD` в `.env` после инициализации тома; при ошибке `password authentication failed` — выровняйте пароль в PostgreSQL (см. комментарии в `.env.example`).
+- **User / Password / Database:** из `.env` — `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`.
 
-### Docker Registry
+## Docker Registry (при `--profile tools`)
 
-- Логин: `docker login <хост>:5000`, учётки в **`registry-auth/htpasswd`**.  
-- HTTP без TLS: на **клиенте** Docker добавьте `insecure-registries` — см. `.env.example`.  
-- Для публичного IP ограничьте доступ файрволом; при необходимости — TLS и прокси.
+- `docker login <хост>:5000`, учётки в **`registry-auth/htpasswd`**.  
+- HTTP без TLS: `insecure-registries` на **клиенте** Docker — см. `.env.example`.
 
 ## Файлы конфигурации
 
-- `config/nginx/default.conf` — виртуальный хост Nginx.  
-- `config/registry/config.yml` — настройка Registry, хранение, auth.  
-- `config/pgadmin-nginx/gate.conf` — прокси к pgAdmin, редирект `/pgadmin` → `/`.
+- `config/nginx/default.conf` — виртуальный хост.  
+- `config/registry/config.yml` — настройка Registry.  
+- `config/pgadmin-nginx/gate.conf` — прокси к pgAdmin.
 
 ## Репозиторий
 
-В **`.gitignore`**: `.env` и `registry-auth/htpasswd`. Клонируя проект, скопируйте `.env.example` → `.env` и сгенерируйте `htpasswd` для registry.
-
-## Дальше
-
-В `docker-compose.yml` в комментариях есть шаблон сервиса **backend** (подключение к `postgres`, публикация образа в registry). Подключите `upstream` в Nginx, когда появятся фронт и API.
+В **`.gitignore`**: `.env` и `registry-auth/htpasswd`. Скопируйте `.env.example` → `.env`.
